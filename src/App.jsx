@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Camera, Mic, MicOff, Copy, RefreshCw, Zap, Package, Sparkles } from 'lucide-react';
 
+// Get API URL
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001'; 
 
 const App = () => {
@@ -16,6 +17,7 @@ const App = () => {
   const recognitionRef = useRef(null);
 
   useEffect(() => {
+    // Setup Speech Recognition
     if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
       const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
       recognitionRef.current = new SpeechRecognition();
@@ -43,17 +45,68 @@ const App = () => {
     }
   };
 
-  const handleImageUpload = (e) => {
-    const files = Array.from(e.target.files);
-    Promise.all(files.map(file => {
-      return new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onloadend = () => resolve(reader.result);
-        reader.onerror = reject;
-        reader.readAsDataURL(file);
-      });
-    })).then(results => setImages(prev => [...prev, ...results]));
+  // --- NEW: IMAGE COMPRESSION & CONVERSION ---
+  const processImage = (file) => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.readAsDataURL(file);
+      reader.onload = (event) => {
+        const img = new Image();
+        img.src = event.target.result;
+        img.onload = () => {
+          // Create a canvas to draw the image (this converts it to pixels)
+          const canvas = document.createElement('canvas');
+          
+          // Resize logic: Keep max dimension to 1500px (Good balance of quality vs size)
+          let width = img.width;
+          let height = img.height;
+          const MAX_SIZE = 1500;
+          
+          if (width > height) {
+            if (width > MAX_SIZE) {
+              height *= MAX_SIZE / width;
+              width = MAX_SIZE;
+            }
+          } else {
+            if (height > MAX_SIZE) {
+              width *= MAX_SIZE / height;
+              height = MAX_SIZE;
+            }
+          }
+
+          canvas.width = width;
+          canvas.height = height;
+          
+          const ctx = canvas.getContext('2d');
+          ctx.drawImage(img, 0, 0, width, height);
+          
+          // Export as JPEG at 80% quality (Solves the HEIC and Size issues!)
+          const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
+          resolve(dataUrl);
+        };
+        img.onerror = (err) => reject(err);
+      };
+      reader.onerror = (err) => reject(err);
+    });
   };
+
+  const handleImageUpload = async (e) => {
+    const files = Array.from(e.target.files);
+    if (files.length === 0) return;
+    
+    setLoading(true);
+    try {
+      // Process all images
+      const processedImages = await Promise.all(files.map(processImage));
+      setImages(prev => [...prev, ...processedImages]);
+    } catch (err) {
+      alert("Error processing photo. Try taking a screenshot of it instead.");
+      console.error(err);
+    } finally {
+      setLoading(false);
+    }
+  };
+  // --------------------------------------------
 
   const analyzeImages = async () => {
     if (images.length === 0) return alert("Please upload a photo first!");
@@ -64,12 +117,19 @@ const App = () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ images, template })
       });
+      
+      if (!res.ok) {
+        const errText = await res.text();
+        throw new Error(`Server error: ${res.status}`);
+      }
+
       const data = await res.json();
       if (data.error) throw new Error(data.error);
+      
       setQuestions(data.questions);
       setStep(2);
     } catch (err) {
-      alert("Error: " + err.message);
+      alert("Error analyzing images: " + err.message);
     } finally {
       setLoading(false);
     }
@@ -89,7 +149,7 @@ const App = () => {
       setGeneratedPost(data.post);
       setStep(3);
     } catch (err) {
-      alert("Error: " + err.message);
+      alert("Error generating post: " + err.message);
     } finally {
       setLoading(false);
     }
@@ -119,6 +179,7 @@ const App = () => {
 
       {step === 1 && (
         <div className="space-y-6">
+          {/* Templates */}
           <div className="bg-white p-4 rounded-xl shadow-sm">
             <label className="text-sm font-semibold text-gray-500 mb-2 block">Select Style</label>
             <div className="flex gap-2">
@@ -129,6 +190,8 @@ const App = () => {
               ))}
             </div>
           </div>
+
+          {/* Upload */}
           <div className="bg-white p-6 rounded-xl shadow-sm border-2 border-dashed border-blue-200 text-center">
             <input type="file" multiple accept="image/*" onChange={handleImageUpload} className="hidden" id="file-upload" />
             <label htmlFor="file-upload" className="cursor-pointer flex flex-col items-center">
@@ -136,8 +199,19 @@ const App = () => {
               <span className="text-blue-600 font-semibold">Tap to Take Photo</span>
             </label>
           </div>
-          {images.length > 0 && <div className="grid grid-cols-3 gap-2">{images.map((img, i) => <img key={i} src={img} className="w-full h-24 object-cover rounded-lg" alt="preview" />)}</div>}
-          <button onClick={analyzeImages} disabled={loading || images.length === 0} className="w-full bg-blue-600 text-white py-4 rounded-xl font-bold shadow-lg disabled:opacity-50">{loading ? 'Analyzing...' : 'Analyze Project'}</button>
+
+          {/* Previews */}
+          {images.length > 0 && (
+            <div className="grid grid-cols-3 gap-2">
+              {images.map((img, i) => (
+                <img key={i} src={img} className="w-full h-24 object-cover rounded-lg" alt="preview" />
+              ))}
+            </div>
+          )}
+
+          <button onClick={analyzeImages} disabled={loading || images.length === 0} className="w-full bg-blue-600 text-white py-4 rounded-xl font-bold shadow-lg disabled:opacity-50">
+            {loading ? 'Processing...' : 'Analyze Project'}
+          </button>
         </div>
       )}
 
