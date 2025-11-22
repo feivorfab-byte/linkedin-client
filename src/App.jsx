@@ -45,7 +45,7 @@ const App = () => {
     }
   };
 
-  // --- IMAGE COMPRESSION & CONVERSION ---
+  // --- NEW: IMAGE COMPRESSION & CONVERSION ---
   const processImage = (file) => {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
@@ -54,7 +54,10 @@ const App = () => {
         const img = new Image();
         img.src = event.target.result;
         img.onload = () => {
+          // Create a canvas to draw the image (this converts it to pixels)
           const canvas = document.createElement('canvas');
+          
+          // Resize logic: Keep max dimension to 1500px (Good balance of quality vs size)
           let width = img.width;
           let height = img.height;
           const MAX_SIZE = 1500;
@@ -76,6 +79,8 @@ const App = () => {
           
           const ctx = canvas.getContext('2d');
           ctx.drawImage(img, 0, 0, width, height);
+          
+          // Export as JPEG at 80% quality (Solves the HEIC and Size issues!)
           const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
           resolve(dataUrl);
         };
@@ -91,6 +96,7 @@ const App = () => {
     
     setLoading(true);
     try {
+      // Process all images
       const processedImages = await Promise.all(files.map(processImage));
       setImages(prev => [...prev, ...processedImages]);
     } catch (err) {
@@ -100,6 +106,7 @@ const App = () => {
       setLoading(false);
     }
   };
+  // --------------------------------------------
 
   const analyzeImages = async () => {
     if (images.length === 0) return alert("Please upload a photo first!");
@@ -111,7 +118,10 @@ const App = () => {
         body: JSON.stringify({ images, template })
       });
       
-      if (!res.ok) throw new Error(`Server error: ${res.status}`);
+      if (!res.ok) {
+        const errText = await res.text();
+        throw new Error(`Server error: ${res.status}`);
+      }
 
       const data = await res.json();
       if (data.error) throw new Error(data.error);
@@ -169,6 +179,7 @@ const App = () => {
 
       {step === 1 && (
         <div className="space-y-6">
+          {/* Templates */}
           <div className="bg-white p-4 rounded-xl shadow-sm">
             <label className="text-sm font-semibold text-gray-500 mb-2 block">Select Style</label>
             <div className="flex gap-2">
@@ -180,6 +191,7 @@ const App = () => {
             </div>
           </div>
 
+          {/* Upload */}
           <div className="bg-white p-6 rounded-xl shadow-sm border-2 border-dashed border-blue-200 text-center">
             <input type="file" multiple accept="image/*" onChange={handleImageUpload} className="hidden" id="file-upload" />
             <label htmlFor="file-upload" className="cursor-pointer flex flex-col items-center">
@@ -188,6 +200,7 @@ const App = () => {
             </label>
           </div>
 
+          {/* Previews */}
           {images.length > 0 && (
             <div className="grid grid-cols-3 gap-2">
               {images.map((img, i) => (
@@ -226,22 +239,8 @@ const App = () => {
       {step === 3 && (
         <div className="space-y-6">
           <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200"><div className="whitespace-pre-wrap text-gray-800 leading-relaxed">{generatedPost}</div></div>
-          
-          <button onClick={copyToClipboard} className="w-full bg-green-600 text-white py-4 rounded-xl font-bold shadow-lg flex justify-center gap-2 transform active:scale-95 transition-all">
-            <Copy size={20} /> Copy to Clipboard
-          </button>
-
-          <div className="flex gap-3">
-             {/* NEW: Regenerate Button */}
-            <button onClick={generatePost} disabled={loading} className="flex-1 bg-blue-100 text-blue-700 py-4 rounded-xl font-bold flex justify-center gap-2 border border-blue-200">
-              {loading ? <RefreshCw className="animate-spin" size={20} /> : <RefreshCw size={20} />}
-              Try Again
-            </button>
-            
-            <button onClick={() => { setStep(1); setImages([]); setAnswer(''); setGeneratedPost(''); }} className="flex-1 bg-gray-100 text-gray-600 py-4 rounded-xl font-bold flex justify-center gap-2 border border-gray-200">
-              <Package size={20} /> New Project
-            </button>
-          </div>
+          <button onClick={copyToClipboard} className="w-full bg-green-600 text-white py-4 rounded-xl font-bold shadow-lg flex justify-center gap-2"><Copy size={20} /> Copy</button>
+          <button onClick={() => { setStep(1); setImages([]); setAnswer(''); setGeneratedPost(''); }} className="w-full bg-white border-2 border-gray-200 text-gray-600 py-4 rounded-xl font-bold flex justify-center gap-2"><RefreshCw size={20} /> New Post</button>
         </div>
       )}
     </div>
