@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Camera, Mic, MicOff, Copy, RefreshCw, Zap, Package, Sparkles } from 'lucide-react';
+import { Camera, Mic, MicOff, Copy, RefreshCw, Zap, Package, Sparkles, Send } from 'lucide-react';
 
 // Get API URL
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001'; 
@@ -12,6 +12,7 @@ const App = () => {
   const [selectedQuestion, setSelectedQuestion] = useState(null);
   const [answer, setAnswer] = useState('');
   const [generatedPost, setGeneratedPost] = useState('');
+  const [refinementPrompt, setRefinementPrompt] = useState(''); // NEW state for refinement
   const [loading, setLoading] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
   const recognitionRef = useRef(null);
@@ -33,6 +34,14 @@ const App = () => {
         if (finalTranscript) setAnswer(prev => prev + ' ' + finalTranscript);
       };
     }
+    
+    // Cleanup function
+    return () => {
+      if (recognitionRef.current) {
+        recognitionRef.current.stop();
+      }
+    };
+
   }, []);
 
   const toggleRecording = () => {
@@ -45,7 +54,7 @@ const App = () => {
     }
   };
 
-  // --- NEW: IMAGE COMPRESSION & CONVERSION ---
+  // --- Image Processing (No change, keeping full code for replacement) ---
   const processImage = (file) => {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
@@ -54,10 +63,7 @@ const App = () => {
         const img = new Image();
         img.src = event.target.result;
         img.onload = () => {
-          // Create a canvas to draw the image (this converts it to pixels)
           const canvas = document.createElement('canvas');
-          
-          // Resize logic: Keep max dimension to 1500px (Good balance of quality vs size)
           let width = img.width;
           let height = img.height;
           const MAX_SIZE = 1500;
@@ -80,7 +86,6 @@ const App = () => {
           const ctx = canvas.getContext('2d');
           ctx.drawImage(img, 0, 0, width, height);
           
-          // Export as JPEG at 80% quality (Solves the HEIC and Size issues!)
           const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
           resolve(dataUrl);
         };
@@ -96,7 +101,6 @@ const App = () => {
     
     setLoading(true);
     try {
-      // Process all images
       const processedImages = await Promise.all(files.map(processImage));
       setImages(prev => [...prev, ...processedImages]);
     } catch (err) {
@@ -108,14 +112,22 @@ const App = () => {
   };
   // --------------------------------------------
 
-  const analyzeImages = async () => {
+  // --- Core Logic ---
+
+  const analyzeImages = async (recycle = false) => {
     if (images.length === 0) return alert("Please upload a photo first!");
     setLoading(true);
+    setSelectedQuestion(null); // Reset selection on new analysis
+    setAnswer(''); // Reset answer on new analysis
+    
+    // Add a flag to the server request for recycling
+    const promptModifier = recycle ? "Generate entirely new and different questions than the previous set." : "";
+
     try {
       const res = await fetch(`${API_URL}/api/analyze-images`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ images, template })
+        body: JSON.stringify({ images, template, promptModifier })
       });
       
       if (!res.ok) {
@@ -135,8 +147,20 @@ const App = () => {
     }
   };
 
+  // NEW: Toggle Question Selection and Visibility
+  const toggleQuestion = (questionText) => {
+    if (selectedQuestion === questionText) {
+      // Deselect and show all
+      setSelectedQuestion(null);
+    } else {
+      // Select and hide others
+      setSelectedQuestion(questionText);
+      setAnswer(''); // Clear answer when a new question is selected
+    }
+  };
+
   const generatePost = async () => {
-    if (!answer) return alert("Please answer the question!");
+    if (!selectedQuestion || !answer) return alert("Please select a question and provide an answer!");
     setLoading(true);
     try {
       const res = await fetch(`${API_URL}/api/generate-post`, {
@@ -155,6 +179,34 @@ const App = () => {
     }
   };
 
+  // NEW: Refine Post Logic
+  const refinePost = async () => {
+    if (!refinementPrompt) return alert("Please type what you want to change first.");
+    setLoading(true);
+
+    try {
+      const res = await fetch(`${API_URL}/api/refine-post`, { // NEW endpoint
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          currentPost: generatedPost, 
+          refinementPrompt: refinementPrompt 
+        })
+      });
+      
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      
+      setGeneratedPost(data.post); // Update the post with the refined version
+      setRefinementPrompt(''); // Clear refinement prompt
+    } catch (err) {
+      alert("Error refining post: " + err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+  // -----------------------
+
   const copyToClipboard = async () => {
     try {
       await navigator.clipboard.writeText(generatedPost);
@@ -163,6 +215,16 @@ const App = () => {
       alert("Manual copy needed.");
     }
   };
+
+  const resetApp = () => {
+    setStep(1); 
+    setImages([]); 
+    setAnswer(''); 
+    setGeneratedPost(''); 
+    setSelectedQuestion(null);
+    setQuestions([]);
+    setRefinementPrompt('');
+  }
 
   const templates = [
     { id: 'General', icon: <Sparkles size={20}/>, label: 'Standard' },
@@ -209,7 +271,7 @@ const App = () => {
             </div>
           )}
 
-          <button onClick={analyzeImages} disabled={loading || images.length === 0} className="w-full bg-blue-600 text-white py-4 rounded-xl font-bold shadow-lg disabled:opacity-50">
+          <button onClick={() => analyzeImages(false)} disabled={loading || images.length === 0} className="w-full bg-blue-600 text-white py-4 rounded-xl font-bold shadow-lg disabled:opacity-50">
             {loading ? 'Processing...' : 'Analyze Project'}
           </button>
         </div>
@@ -217,30 +279,90 @@ const App = () => {
 
       {step === 2 && (
         <div className="space-y-6">
-          <div className="space-y-3">
+          <div className="flex justify-between items-center">
             <h2 className="font-bold text-lg">Choose a Question:</h2>
-            {questions.map((q, i) => (
-              <button key={i} onClick={() => setSelectedQuestion(q.text)} className={`w-full text-left p-4 rounded-xl border ${selectedQuestion === q.text ? 'border-blue-500 bg-blue-50' : 'bg-white'}`}>{q.text}</button>
-            ))}
+            <button onClick={() => analyzeImages(true)} disabled={loading} className="text-sm text-blue-600 hover:text-blue-800 flex items-center gap-1">
+              <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
+              Recycle
+            </button>
           </div>
+          
+          <div className="space-y-3">
+            {questions.map((q, i) => {
+              const isSelected = selectedQuestion === q.text;
+              const isHidden = selectedQuestion !== null && !isSelected;
+
+              return (
+                <button 
+                  key={i} 
+                  onClick={() => toggleQuestion(q.text)} 
+                  className={`w-full text-left p-4 rounded-xl border transition-all duration-300 ease-in-out 
+                    ${isSelected ? 'border-blue-500 bg-blue-50 shadow-md' : 'bg-white'}
+                    ${isHidden ? 'opacity-0 h-0 p-0 m-0 border-none pointer-events-none' : 'h-auto opacity-100'}`}
+                  style={{ overflow: 'hidden' }}
+                >
+                  {q.text}
+                </button>
+              )
+            })}
+          </div>
+          
           {selectedQuestion && (
             <div className="bg-white p-4 rounded-xl shadow-sm relative">
-              <textarea value={answer} onChange={(e) => setAnswer(e.target.value)} className="w-full h-32 p-3 border rounded-lg" placeholder="We used 2-inch foam..." />
-              <button onClick={toggleRecording} className={`absolute bottom-3 right-3 p-2 rounded-full shadow-md ${isRecording ? 'bg-red-500 text-white animate-pulse' : 'bg-gray-100'}`}>{isRecording ? <MicOff size={20} /> : <Mic size={20} />}</button>
+              <textarea 
+                value={answer} 
+                onChange={(e) => setAnswer(e.target.value)} 
+                className="w-full h-32 p-3 border rounded-lg focus:ring-blue-500 focus:border-blue-500" 
+                placeholder={`Tell me more about the selected topic: ${selectedQuestion}`} 
+              />
+              <button 
+                onClick={toggleRecording} 
+                className={`absolute bottom-6 right-6 p-2 rounded-full shadow-md transition-colors 
+                  ${isRecording ? 'bg-red-500 text-white animate-pulse' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}
+              >
+                {isRecording ? <MicOff size={20} /> : <Mic size={20} />}
+              </button>
             </div>
           )}
+          
           <div className="flex gap-3">
             <button onClick={() => setStep(1)} className="flex-1 bg-gray-200 py-4 rounded-xl font-bold">Back</button>
-            <button onClick={generatePost} disabled={loading || !selectedQuestion || !answer} className="flex-[2] bg-blue-600 text-white py-4 rounded-xl font-bold shadow-lg disabled:opacity-50">{loading ? 'Writing...' : 'Generate Post'}</button>
+            <button onClick={generatePost} disabled={loading || !selectedQuestion || !answer} className="flex-[2] bg-blue-600 text-white py-4 rounded-xl font-bold shadow-lg disabled:opacity-50">
+              {loading ? 'Writing...' : 'Generate Post'}
+            </button>
           </div>
         </div>
       )}
 
       {step === 3 && (
         <div className="space-y-6">
-          <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200"><div className="whitespace-pre-wrap text-gray-800 leading-relaxed">{generatedPost}</div></div>
-          <button onClick={copyToClipboard} className="w-full bg-green-600 text-white py-4 rounded-xl font-bold shadow-lg flex justify-center gap-2"><Copy size={20} /> Copy</button>
-          <button onClick={() => { setStep(1); setImages([]); setAnswer(''); setGeneratedPost(''); }} className="w-full bg-white border-2 border-gray-200 text-gray-600 py-4 rounded-xl font-bold flex justify-center gap-2"><RefreshCw size={20} /> New Post</button>
+          <h2 className="font-bold text-lg">Generated Post Draft:</h2>
+          
+          {/* Post Display */}
+          <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200">
+            <div className="whitespace-pre-wrap text-gray-800 leading-relaxed font-medium">{generatedPost}</div>
+          </div>
+
+          {/* Refinement Area */}
+          <div className="bg-white p-4 rounded-xl shadow-sm relative border border-blue-100">
+            <h3 className="text-sm font-semibold mb-2">Refine Post:</h3>
+            <textarea 
+              value={refinementPrompt} 
+              onChange={(e) => setRefinementPrompt(e.target.value)} 
+              className="w-full h-16 p-3 border rounded-lg resize-none" 
+              placeholder="e.g. Make it shorter and use less technical terms." 
+            />
+            <button 
+              onClick={refinePost} 
+              disabled={loading || !refinementPrompt} 
+              className="absolute bottom-6 right-6 p-2 rounded-full bg-blue-600 text-white shadow-md disabled:bg-blue-300 hover:bg-blue-700 transition"
+            >
+              {loading ? <RefreshCw size={20} className="animate-spin" /> : <Send size={20} />}
+            </button>
+          </div>
+
+          <button onClick={copyToClipboard} className="w-full bg-green-600 text-white py-4 rounded-xl font-bold shadow-lg flex justify-center gap-2"><Copy size={20} /> Copy to Clipboard</button>
+          <button onClick={resetApp} className="w-full bg-white border-2 border-gray-200 text-gray-600 py-4 rounded-xl font-bold flex justify-center gap-2"><RefreshCw size={20} /> Start New Post</button>
         </div>
       )}
     </div>
