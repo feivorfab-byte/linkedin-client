@@ -1,371 +1,461 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { Camera, Mic, MicOff, Copy, RefreshCw, Zap, Package, Sparkles, Send } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { Upload, Loader2, Sparkles, History, ChevronDown } from 'lucide-react';
 
-// Get API URL
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001'; 
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001';
 
-const App = () => {
-  const [step, setStep] = useState(1);
+export default function App() {
   const [images, setImages] = useState([]);
-  const [template, setTemplate] = useState('General');
   const [questions, setQuestions] = useState([]);
-  const [selectedQuestion, setSelectedQuestion] = useState(null);
-  const [answer, setAnswer] = useState('');
+  const [hashtags, setHashtags] = useState([]);
+  const [answers, setAnswers] = useState({});
   const [generatedPost, setGeneratedPost] = useState('');
-  const [refinementPrompt, setRefinementPrompt] = useState(''); // NEW state for refinement
+  const [variations, setVariations] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [isRecording, setIsRecording] = useState(false);
-  const recognitionRef = useRef(null);
+  const [loadingVariations, setLoadingVariations] = useState(false);
+  const [error, setError] = useState('');
+  const [showHistory, setShowHistory] = useState(false);
+  const [history, setHistory] = useState([]);
+  
+  // New state for controls
+  const [tone, setTone] = useState('balanced');
+  const [length, setLength] = useState('medium');
+  const [showVariations, setShowVariations] = useState(false);
 
   useEffect(() => {
-    // Setup Speech Recognition
-    if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
-      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-      recognitionRef.current = new SpeechRecognition();
-      recognitionRef.current.continuous = true;
-      recognitionRef.current.interimResults = true;
-      recognitionRef.current.onresult = (event) => {
-        let finalTranscript = '';
-        for (let i = event.resultIndex; i < event.results.length; i++) {
-          if (event.results[i].isFinal) {
-            finalTranscript += event.results[i][0].transcript + ' ';
-          }
-        }
-        if (finalTranscript) setAnswer(prev => prev + ' ' + finalTranscript);
-      };
-    }
-    
-    // Cleanup function
-    return () => {
-      if (recognitionRef.current) {
-        recognitionRef.current.stop();
-      }
-    };
-
+    loadHistory();
   }, []);
 
-  const toggleRecording = () => {
-    if (isRecording) {
-      recognitionRef.current?.stop();
-      setIsRecording(false);
-    } else {
-      recognitionRef.current?.start();
-      setIsRecording(true);
+  const loadHistory = async () => {
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/get-history`);
+      const data = await response.json();
+      setHistory(data.history || []);
+    } catch (err) {
+      console.error('Error loading history:', err);
     }
   };
 
-  // --- Image Processing (No change, keeping full code for replacement) ---
-  const processImage = (file) => {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.readAsDataURL(file);
-      reader.onload = (event) => {
-        const img = new Image();
-        img.src = event.target.result;
-        img.onload = () => {
-          const canvas = document.createElement('canvas');
-          let width = img.width;
-          let height = img.height;
-          const MAX_SIZE = 1500;
-          
-          if (width > height) {
-            if (width > MAX_SIZE) {
-              height *= MAX_SIZE / width;
-              width = MAX_SIZE;
-            }
-          } else {
-            if (height > MAX_SIZE) {
-              width *= MAX_SIZE / height;
-              height = MAX_SIZE;
-            }
-          }
+  const handleImageUpload = (e) => {
+    const files = Array.from(e.target.files);
+    const imagePromises = files.map((file) => {
+      return new Promise((resolve) => {
+        const reader = new FileReader();
+        reader.onload = (e) => resolve(e.target.result);
+        reader.readAsDataURL(file);
+      });
+    });
 
-          canvas.width = width;
-          canvas.height = height;
-          
-          const ctx = canvas.getContext('2d');
-          ctx.drawImage(img, 0, 0, width, height);
-          
-          const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
-          resolve(dataUrl);
-        };
-        img.onerror = (err) => reject(err);
-      };
-      reader.onerror = (err) => reject(err);
+    Promise.all(imagePromises).then((imageData) => {
+      setImages(imageData);
+      setQuestions([]);
+      setAnswers({});
+      setGeneratedPost('');
+      setVariations([]);
+      setError('');
     });
   };
 
-  const handleImageUpload = async (e) => {
-    const files = Array.from(e.target.files);
-    if (files.length === 0) return;
-    
-    setLoading(true);
-    try {
-      const processedImages = await Promise.all(files.map(processImage));
-      setImages(prev => [...prev, ...processedImages]);
-    } catch (err) {
-      alert("Error processing photo. Try taking a screenshot of it instead.");
-      console.error(err);
-    } finally {
-      setLoading(false);
+  const analyzeImages = async () => {
+    if (images.length === 0) {
+      setError('Please upload at least one image');
+      return;
     }
-  };
-  // --------------------------------------------
 
-  // --- Core Logic ---
-
-  const analyzeImages = async (recycle = false) => {
-    if (images.length === 0) return alert("Please upload a photo first!");
     setLoading(true);
-    setSelectedQuestion(null); // Reset selection on new analysis
-    setAnswer(''); // Reset answer on new analysis
-    
-    // Add a flag to the server request for recycling
-    const promptModifier = recycle ? "Generate entirely new and different questions than the previous set." : "";
+    setError('');
 
     try {
-      const res = await fetch(`${API_URL}/api/analyze-images`, {
+      const response = await fetch(`${API_BASE_URL}/api/analyze-images`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ images, template, promptModifier })
+        body: JSON.stringify({ images }),
       });
-      
-      if (!res.ok) {
-        const errText = await res.text();
-        throw new Error(`Server error: ${res.status}`);
-      }
 
-      const data = await res.json();
-      if (data.error) throw new Error(data.error);
-      
-      setQuestions(data.questions);
-      setStep(2);
+      const data = await response.json();
+
+      if (response.ok) {
+        setQuestions(data.questions || []);
+        setHashtags(data.hashtags || []);
+        setAnswers({});
+      } else {
+        setError(data.error || 'Failed to analyze images');
+      }
     } catch (err) {
-      alert("Error analyzing images: " + err.message);
+      setError('Network error. Please try again.');
     } finally {
       setLoading(false);
-    }
-  };
-
-  // NEW: Toggle Question Selection and Visibility
-  const toggleQuestion = (questionText) => {
-    if (selectedQuestion === questionText) {
-      // Deselect and show all
-      setSelectedQuestion(null);
-    } else {
-      // Select and hide others
-      setSelectedQuestion(questionText);
-      setAnswer(''); // Clear answer when a new question is selected
     }
   };
 
   const generatePost = async () => {
-    if (!selectedQuestion || !answer) return alert("Please select a question and provide an answer!");
+    const unanswered = questions.find((q) => !answers[q.id]);
+    if (unanswered) {
+      setError('Please answer all questions before generating a post');
+      return;
+    }
+
     setLoading(true);
+    setError('');
+    setShowVariations(false);
+
     try {
-      const res = await fetch(`${API_URL}/api/generate-post`, {
+      const combinedAnswer = questions
+        .map((q) => `${q.text}\n${answers[q.id]}`)
+        .join('\n\n');
+
+      const response = await fetch(`${API_BASE_URL}/api/generate-post`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ question: selectedQuestion, answer, template })
+        body: JSON.stringify({
+          question: questions.map(q => q.text).join(' | '),
+          answer: combinedAnswer,
+          tone,
+          length,
+          hashtags
+        }),
       });
-      const data = await res.json();
-      if (data.error) throw new Error(data.error);
-      setGeneratedPost(data.post);
-      setStep(3);
+
+      const data = await response.json();
+
+      if (response.ok) {
+        setGeneratedPost(data.post);
+        // Auto-save to history
+        await saveToHistory(data.post);
+      } else {
+        setError(data.error || 'Failed to generate post');
+      }
     } catch (err) {
-      alert("Error generating post: " + err.message);
+      setError('Network error. Please try again.');
     } finally {
       setLoading(false);
     }
   };
 
-  // NEW: Refine Post Logic
-  const refinePost = async () => {
-    if (!refinementPrompt) return alert("Please type what you want to change first.");
-    setLoading(true);
+  const generateVariations = async () => {
+    const unanswered = questions.find((q) => !answers[q.id]);
+    if (unanswered) {
+      setError('Please answer all questions before generating variations');
+      return;
+    }
+
+    setLoadingVariations(true);
+    setError('');
 
     try {
-      const res = await fetch(`${API_URL}/api/refine-post`, { // NEW endpoint
+      const combinedAnswer = questions
+        .map((q) => `${q.text}\n${answers[q.id]}`)
+        .join('\n\n');
+
+      const response = await fetch(`${API_BASE_URL}/api/generate-variations`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          currentPost: generatedPost, 
-          refinementPrompt: refinementPrompt 
-        })
+        body: JSON.stringify({
+          question: questions.map(q => q.text).join(' | '),
+          answer: combinedAnswer,
+          length,
+          hashtags
+        }),
       });
-      
-      const data = await res.json();
-      if (data.error) throw new Error(data.error);
-      
-      setGeneratedPost(data.post); // Update the post with the refined version
-      setRefinementPrompt(''); // Clear refinement prompt
+
+      const data = await response.json();
+
+      if (response.ok) {
+        setVariations(data.variations || []);
+        setShowVariations(true);
+      } else {
+        setError(data.error || 'Failed to generate variations');
+      }
     } catch (err) {
-      alert("Error refining post: " + err.message);
+      setError('Network error. Please try again.');
     } finally {
-      setLoading(false);
+      setLoadingVariations(false);
     }
   };
-  // -----------------------
 
-  const copyToClipboard = async () => {
+  const saveToHistory = async (post) => {
     try {
-      await navigator.clipboard.writeText(generatedPost);
-      alert("Copied!");
+      const combinedAnswer = questions
+        .map((q) => `${q.text}\n${answers[q.id]}`)
+        .join('\n\n');
+
+      await fetch(`${API_BASE_URL}/api/save-post`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          question: questions.map(q => q.text).join(' | '),
+          answer: combinedAnswer,
+          post,
+          hashtags
+        }),
+      });
+
+      await loadHistory();
     } catch (err) {
-      alert("Manual copy needed.");
+      console.error('Error saving to history:', err);
     }
   };
 
-  const resetApp = () => {
-    setStep(1); 
-    setImages([]); 
-    setAnswer(''); 
-    setGeneratedPost(''); 
-    setSelectedQuestion(null);
-    setQuestions([]);
-    setRefinementPrompt('');
-  }
-
-  const templates = [
-    { id: 'General', icon: <Sparkles size={20}/>, label: 'Standard' },
-    { id: 'Rush', icon: <Zap size={20}/>, label: 'Rush Job' },
-    { id: 'Technical', icon: <Package size={20}/>, label: 'Complex' },
-  ];
+  const useHistoryPost = (entry) => {
+    setGeneratedPost(entry.post);
+    setShowHistory(false);
+  };
 
   return (
-    <div className="min-h-screen bg-gray-50 p-4 max-w-md mx-auto font-sans text-gray-800">
-      <header className="flex justify-between items-center mb-6">
-        <h1 className="text-xl font-bold text-blue-900">Post Gen</h1>
-        <div className="text-xs bg-blue-100 text-blue-800 px-2 py-1 rounded-full">Step {step}/3</div>
-      </header>
+    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900">
+      <div className="container mx-auto px-4 py-8">
+        <div className="text-center mb-12">
+          <h1 className="text-5xl font-bold text-white mb-4 flex items-center justify-center gap-3">
+            <Sparkles className="w-12 h-12 text-yellow-400" />
+            LinkedIn Post Generator
+          </h1>
+          <p className="text-xl text-gray-300">
+            Transform your fabrication projects into compelling stories
+          </p>
+        </div>
 
-      {step === 1 && (
-        <div className="space-y-6">
-          {/* Templates */}
-          <div className="bg-white p-4 rounded-xl shadow-sm">
-            <label className="text-sm font-semibold text-gray-500 mb-2 block">Select Style</label>
-            <div className="flex gap-2">
-              {templates.map(t => (
-                <button key={t.id} onClick={() => setTemplate(t.id)} className={`flex-1 flex flex-col items-center p-3 rounded-lg border ${template === t.id ? 'border-blue-500 bg-blue-50 text-blue-700' : 'border-gray-200 text-gray-500'}`}>
-                  {t.icon}<span className="text-xs mt-1 font-medium">{t.label}</span>
-                </button>
-              ))}
-            </div>
+        {error && (
+          <div className="max-w-4xl mx-auto mb-6 bg-red-500/10 border border-red-500 text-red-200 px-4 py-3 rounded">
+            {error}
           </div>
+        )}
 
-          {/* Upload */}
-          <div className="bg-white p-6 rounded-xl shadow-sm border-2 border-dashed border-blue-200 text-center">
-            <input type="file" multiple accept="image/*" onChange={handleImageUpload} className="hidden" id="file-upload" />
-            <label htmlFor="file-upload" className="cursor-pointer flex flex-col items-center">
-              <Camera className="w-12 h-12 text-blue-400 mb-2" />
-              <span className="text-blue-600 font-semibold">Tap to Take Photo</span>
+        {/* History Button */}
+        <div className="max-w-4xl mx-auto mb-6 flex justify-end">
+          <button
+            onClick={() => setShowHistory(!showHistory)}
+            className="flex items-center gap-2 px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition"
+          >
+            <History className="w-5 h-5" />
+            {showHistory ? 'Hide History' : 'Show History'}
+          </button>
+        </div>
+
+        {/* History Panel */}
+        {showHistory && (
+          <div className="max-w-4xl mx-auto mb-8 bg-white/10 backdrop-blur rounded-lg p-6">
+            <h2 className="text-2xl font-bold text-white mb-4">Post History</h2>
+            {history.length === 0 ? (
+              <p className="text-gray-300">No saved posts yet</p>
+            ) : (
+              <div className="space-y-4 max-h-96 overflow-y-auto">
+                {history.map((entry) => (
+                  <div key={entry.id} className="bg-white/5 rounded p-4 hover:bg-white/10 transition">
+                    <p className="text-sm text-gray-400 mb-2">
+                      {new Date(entry.timestamp).toLocaleString()}
+                    </p>
+                    <p className="text-white line-clamp-3 mb-2">{entry.post}</p>
+                    <button
+                      onClick={() => useHistoryPost(entry)}
+                      className="text-sm text-purple-400 hover:text-purple-300"
+                    >
+                      Use this post →
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Image Upload */}
+        <div className="max-w-4xl mx-auto mb-8">
+          <div className="bg-white/10 backdrop-blur rounded-lg p-8 border-2 border-dashed border-white/20 hover:border-purple-400 transition">
+            <label className="cursor-pointer flex flex-col items-center">
+              <Upload className="w-16 h-16 text-purple-400 mb-4" />
+              <span className="text-xl text-white mb-2">Upload Project Images</span>
+              <span className="text-sm text-gray-400">Click or drag images here</span>
+              <input
+                type="file"
+                multiple
+                accept="image/*"
+                onChange={handleImageUpload}
+                className="hidden"
+              />
             </label>
           </div>
 
-          {/* Previews */}
           {images.length > 0 && (
-            <div className="grid grid-cols-3 gap-2">
-              {images.map((img, i) => (
-                <img key={i} src={img} className="w-full h-24 object-cover rounded-lg" alt="preview" />
+            <div className="mt-4 grid grid-cols-3 gap-4">
+              {images.map((img, idx) => (
+                <img
+                  key={idx}
+                  src={img}
+                  alt={`Upload ${idx + 1}`}
+                  className="w-full h-32 object-cover rounded-lg"
+                />
               ))}
             </div>
           )}
-
-          <button onClick={() => analyzeImages(false)} disabled={loading || images.length === 0} className="w-full bg-blue-600 text-white py-4 rounded-xl font-bold shadow-lg disabled:opacity-50">
-            {loading ? 'Processing...' : 'Analyze Project'}
-          </button>
         </div>
-      )}
 
-      {step === 2 && (
-        <div className="space-y-6">
-          <div className="flex justify-between items-center">
-            <h2 className="font-bold text-lg">Choose a Question:</h2>
-            <button onClick={() => analyzeImages(true)} disabled={loading} className="text-sm text-blue-600 hover:text-blue-800 flex items-center gap-1">
-              <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
-              Recycle
+        {images.length > 0 && questions.length === 0 && (
+          <div className="max-w-4xl mx-auto mb-8 text-center">
+            <button
+              onClick={analyzeImages}
+              disabled={loading}
+              className="px-8 py-4 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition disabled:opacity-50 text-lg font-semibold flex items-center gap-3 mx-auto"
+            >
+              {loading ? (
+                <>
+                  <Loader2 className="w-5 h-5 animate-spin" />
+                  Analyzing...
+                </>
+              ) : (
+                <>
+                  <Sparkles className="w-5 h-5" />
+                  Analyze Images
+                </>
+              )}
             </button>
           </div>
-          
-          <div className="space-y-3">
-            {questions.map((q, i) => {
-              const isSelected = selectedQuestion === q.text;
-              const isHidden = selectedQuestion !== null && !isSelected;
+        )}
 
-              return (
-                <button 
-                  key={i} 
-                  onClick={() => toggleQuestion(q.text)} 
-                  className={`w-full text-left p-4 rounded-xl border transition-all duration-300 ease-in-out 
-                    ${isSelected ? 'border-blue-500 bg-blue-50 shadow-md' : 'bg-white'}
-                    ${isHidden ? 'opacity-0 h-0 p-0 m-0 border-none pointer-events-none' : 'h-auto opacity-100'}`}
-                  style={{ overflow: 'hidden' }}
+        {/* Questions */}
+        {questions.length > 0 && (
+          <div className="max-w-4xl mx-auto mb-8 bg-white/10 backdrop-blur rounded-lg p-8">
+            <h2 className="text-2xl font-bold text-white mb-4">Answer These Questions</h2>
+            
+            {/* Generated Hashtags */}
+            {hashtags.length > 0 && (
+              <div className="mb-6 p-4 bg-purple-500/20 rounded-lg">
+                <p className="text-sm text-purple-200 mb-2">Suggested Hashtags:</p>
+                <p className="text-white">{hashtags.join(' ')}</p>
+              </div>
+            )}
+
+            <div className="space-y-6">
+              {questions.map((q) => (
+                <div key={q.id}>
+                  <label className="block text-white font-medium mb-2">
+                    <span className="text-purple-400">{q.category}:</span> {q.text}
+                  </label>
+                  <textarea
+                    value={answers[q.id] || ''}
+                    onChange={(e) => setAnswers({ ...answers, [q.id]: e.target.value })}
+                    className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-purple-400"
+                    rows="3"
+                    placeholder="Your answer..."
+                  />
+                </div>
+              ))}
+            </div>
+
+            {/* Tone and Length Controls */}
+            <div className="mt-6 grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-white font-medium mb-2">Tone</label>
+                <select
+                  value={tone}
+                  onChange={(e) => setTone(e.target.value)}
+                  className="w-full px-4 py-2 bg-white/5 border border-white/10 rounded-lg text-white focus:outline-none focus:border-purple-400"
                 >
-                  {q.text}
-                </button>
-              )
-            })}
-          </div>
-          
-          {selectedQuestion && (
-            <div className="bg-white p-4 rounded-xl shadow-sm relative">
-              <textarea 
-                value={answer} 
-                onChange={(e) => setAnswer(e.target.value)} 
-                className="w-full h-32 p-3 border rounded-lg focus:ring-blue-500 focus:border-blue-500" 
-                placeholder={`Tell me more about the selected topic: ${selectedQuestion}`} 
-              />
-              <button 
-                onClick={toggleRecording} 
-                className={`absolute bottom-6 right-6 p-2 rounded-full shadow-md transition-colors 
-                  ${isRecording ? 'bg-red-500 text-white animate-pulse' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}
+                  <option value="technical">Technical (Industry Pros)</option>
+                  <option value="balanced">Balanced (Mixed Audience)</option>
+                  <option value="accessible">Accessible (General Public)</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-white font-medium mb-2">Length</label>
+                <select
+                  value={length}
+                  onChange={(e) => setLength(e.target.value)}
+                  className="w-full px-4 py-2 bg-white/5 border border-white/10 rounded-lg text-white focus:outline-none focus:border-purple-400"
+                >
+                  <option value="short">Short (~150 words)</option>
+                  <option value="medium">Medium (~350 words)</option>
+                  <option value="long">Long (~550 words)</option>
+                </select>
+              </div>
+            </div>
+
+            <div className="mt-6 flex gap-4">
+              <button
+                onClick={generatePost}
+                disabled={loading}
+                className="flex-1 px-6 py-3 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition disabled:opacity-50 font-semibold flex items-center justify-center gap-2"
               >
-                {isRecording ? <MicOff size={20} /> : <Mic size={20} />}
+                {loading ? (
+                  <>
+                    <Loader2 className="w-5 h-5 animate-spin" />
+                    Generating...
+                  </>
+                ) : (
+                  <>
+                    <Sparkles className="w-5 h-5" />
+                    Generate Post
+                  </>
+                )}
+              </button>
+
+              <button
+                onClick={generateVariations}
+                disabled={loadingVariations}
+                className="flex-1 px-6 py-3 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition disabled:opacity-50 font-semibold flex items-center justify-center gap-2"
+              >
+                {loadingVariations ? (
+                  <>
+                    <Loader2 className="w-5 h-5 animate-spin" />
+                    Creating...
+                  </>
+                ) : (
+                  <>
+                    <ChevronDown className="w-5 h-5" />
+                    Generate 3 Variations
+                  </>
+                )}
               </button>
             </div>
-          )}
-          
-          <div className="flex gap-3">
-            <button onClick={() => setStep(1)} className="flex-1 bg-gray-200 py-4 rounded-xl font-bold">Back</button>
-            <button onClick={generatePost} disabled={loading || !selectedQuestion || !answer} className="flex-[2] bg-blue-600 text-white py-4 rounded-xl font-bold shadow-lg disabled:opacity-50">
-              {loading ? 'Writing...' : 'Generate Post'}
-            </button>
           </div>
-        </div>
-      )}
+        )}
 
-      {step === 3 && (
-        <div className="space-y-6">
-          <h2 className="font-bold text-lg">Generated Post Draft:</h2>
-          
-          {/* Post Display */}
-          <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200">
-            <div className="whitespace-pre-wrap text-gray-800 leading-relaxed font-medium">{generatedPost}</div>
-          </div>
-
-          {/* Refinement Area */}
-          <div className="bg-white p-4 rounded-xl shadow-sm relative border border-blue-100">
-            <h3 className="text-sm font-semibold mb-2">Refine Post:</h3>
-            <textarea 
-              value={refinementPrompt} 
-              onChange={(e) => setRefinementPrompt(e.target.value)} 
-              className="w-full h-16 p-3 border rounded-lg resize-none" 
-              placeholder="e.g. Make it shorter and use less technical terms." 
-            />
-            <button 
-              onClick={refinePost} 
-              disabled={loading || !refinementPrompt} 
-              className="absolute bottom-6 right-6 p-2 rounded-full bg-blue-600 text-white shadow-md disabled:bg-blue-300 hover:bg-blue-700 transition"
+        {/* Generated Post */}
+        {generatedPost && !showVariations && (
+          <div className="max-w-4xl mx-auto bg-white/10 backdrop-blur rounded-lg p-8">
+            <h2 className="text-2xl font-bold text-white mb-4">Your LinkedIn Post</h2>
+            <div className="bg-white rounded-lg p-6">
+              <p className="text-gray-800 whitespace-pre-wrap">{generatedPost}</p>
+            </div>
+            <button
+              onClick={() => {
+                navigator.clipboard.writeText(generatedPost);
+                alert('Copied to clipboard!');
+              }}
+              className="mt-4 px-6 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition"
             >
-              {loading ? <RefreshCw size={20} className="animate-spin" /> : <Send size={20} />}
+              Copy to Clipboard
             </button>
           </div>
+        )}
 
-          <button onClick={copyToClipboard} className="w-full bg-green-600 text-white py-4 rounded-xl font-bold shadow-lg flex justify-center gap-2"><Copy size={20} /> Copy to Clipboard</button>
-          <button onClick={resetApp} className="w-full bg-white border-2 border-gray-200 text-gray-600 py-4 rounded-xl font-bold flex justify-center gap-2"><RefreshCw size={20} /> Start New Post</button>
-        </div>
-      )}
+        {/* Variations */}
+        {showVariations && variations.length > 0 && (
+          <div className="max-w-6xl mx-auto">
+            <h2 className="text-3xl font-bold text-white mb-6 text-center">Choose Your Style</h2>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+              {variations.map((variant, idx) => (
+                <div key={idx} className="bg-white/10 backdrop-blur rounded-lg p-6">
+                  <h3 className="text-xl font-bold text-purple-400 mb-2">{variant.name}</h3>
+                  <p className="text-sm text-gray-400 mb-4">{variant.description}</p>
+                  <div className="bg-white rounded-lg p-4 mb-4 max-h-96 overflow-y-auto">
+                    <p className="text-gray-800 text-sm whitespace-pre-wrap">{variant.post}</p>
+                  </div>
+                  <button
+                    onClick={() => {
+                      setGeneratedPost(variant.post);
+                      setShowVariations(false);
+                      saveToHistory(variant.post);
+                    }}
+                    className="w-full px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition"
+                  >
+                    Use This Version
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
-export default App;
